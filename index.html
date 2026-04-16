@@ -27,11 +27,12 @@
             transform: translateX(-50%);
             color: #fff;
             font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 16px;
+            font-size: 14px;
             text-align: center;
             pointer-events: none;
             text-shadow: 0 0 10px rgba(0, 150, 255, 0.8);
             z-index: 100;
+            line-height: 1.6;
         }
     </style>
 </head>
@@ -78,6 +79,9 @@
         pointLight.position.set(0, 15, 0);
         scene.add(pointLight);
         
+        const axesHelper = new THREE.AxesHelper(10);
+        scene.add(axesHelper);
+        
         const gridSize = 15;
         const cubeSize = 0.8;
         const spacing = 1.2;
@@ -112,7 +116,8 @@
                     baseZ: z,
                     originalScale: 1,
                     targetScale: 1,
-                    isHovered: false
+                    isHovered: false,
+                    rippleHeight: 0
                 };
                 
                 cubes.push(cube);
@@ -125,26 +130,163 @@
         const mouse = new THREE.Vector2();
         let hoveredCube = null;
         
-        function onMouseMove(event) {
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        const ripples = [];
+        
+        const ballGeometry = new THREE.SphereGeometry(0.5, 32, 32);
+        const ballMaterial = new THREE.MeshStandardMaterial({
+            color: 0xff0000,
+            emissive: 0xff0000,
+            emissiveIntensity: 0.5,
+            metalness: 0.5,
+            roughness: 0.3
+        });
+        const ball = new THREE.Mesh(ballGeometry, ballMaterial);
+        scene.add(ball);
+        
+        const ballState = {
+            currentState: 'WANDER',
+            angle: 0,
+            speed: 0.5,
+            orbitRadius: 8,
+            fleeTimer: 0,
+            wanderPhase: 0
+        };
+        
+        function worldToGrid(worldX, worldZ) {
+            const i = Math.round(worldX / spacing + (gridSize - 1) / 2);
+            const j = Math.round(worldZ / spacing + (gridSize - 1) / 2);
+            return {
+                i: Math.max(0, Math.min(gridSize - 1, i)),
+                j: Math.max(0, Math.min(gridSize - 1, j))
+            };
         }
         
-        window.addEventListener('mousemove', onMouseMove, false);
-        
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+        function getCubeHeightAtPosition(worldX, worldZ) {
+            const { i, j } = worldToGrid(worldX, worldZ);
+            const index = i * gridSize + j;
+            if (index >= 0 && index < cubes.length) {
+                return cubes[index].position.y;
+            }
+            return 0;
         }
         
-        window.addEventListener('resize', onWindowResize, false);
+        function calculateWaveMatrix(time) {
+            for (let i = 0; i < cubes.length; i++) {
+                const cube = cubes[i];
+                const { baseX, baseZ, isHovered } = cube.userData;
+                
+                const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
+                
+                const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
+                const secondWave = Math.cos(baseX * 0.3 + time * 1.5) * Math.sin(baseZ * 0.3 + time) * 1.5;
+                
+                let totalRippleHeight = 0;
+                for (const ripple of ripples) {
+                    const rippleDist = Math.sqrt(
+                        Math.pow(baseX - ripple.centerX, 2) + 
+                        Math.pow(baseZ - ripple.centerZ, 2)
+                    );
+                    const waveDist = rippleDist - ripple.radius;
+                    if (Math.abs(waveDist) < 1.5) {
+                        const attenuation = 1 - ripple.time / ripple.maxTime;
+                        const waveShape = Math.cos(waveDist * Math.PI / 1.5) * 0.5 + 0.5;
+                        totalRippleHeight += waveShape * attenuation * ripple.strength;
+                    }
+                }
+                cube.userData.rippleHeight = totalRippleHeight;
+                
+                let targetY = waveHeight + secondWave + totalRippleHeight;
+                
+                if (isHovered) {
+                    targetY += 2;
+                }
+                
+                cube.position.y += (targetY - cube.position.y) * 0.1;
+                
+                const currentScale = cube.scale.x;
+                const newScale = currentScale + (cube.userData.targetScale - currentScale) * 0.15;
+                cube.scale.set(newScale, newScale, newScale);
+                
+                const hue = (Math.sin(time + distance * 0.1) * 0.5 + 0.5) * 0.1 + 0.55;
+                if (!isHovered) {
+                    cube.material.color.setHSL(hue, 0.8, 0.5);
+                    cube.material.emissive.setHSL(hue, 0.5, 0.1);
+                }
+            }
+        }
         
-        function animate() {
-            requestAnimationFrame(animate);
+        function updateUI() {
+            const infoDiv = document.getElementById('info');
+            if (hoveredCube) {
+                const pos = hoveredCube.position;
+                infoDiv.innerHTML = 
+                    `3D 互动波浪矩阵<br>
+                    当前悬停 - 网格坐标: [${hoveredCube.userData.gridX}, ${hoveredCube.userData.gridZ}] | 
+                    世界坐标: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) | 
+                    实时高度: ${pos.y.toFixed(2)}`;
+            } else {
+                infoDiv.innerHTML = 
+                    `3D 互动波浪矩阵 - 移动鼠标与立方体交互 | 点击任意方块产生冲击波`;
+            }
+        }
+        
+        function updateRipples(deltaTime) {
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                const ripple = ripples[i];
+                ripple.time += deltaTime;
+                ripple.radius += deltaTime * 5;
+                
+                if (ripple.time >= ripple.maxTime) {
+                    ripples.splice(i, 1);
+                }
+            }
+        }
+        
+        function updateBallStateMachine(time, deltaTime) {
+            const distanceToBall = (ripple) => {
+                return Math.sqrt(
+                    Math.pow(ball.position.x - ripple.centerX, 2) + 
+                    Math.pow(ball.position.z - ripple.centerZ, 2)
+                );
+            };
             
-            const time = Date.now() * 0.001;
+            const isNearRipple = ripples.some(r => 
+                Math.abs(distanceToBall(r) - r.radius) < 3
+            );
             
+            switch (ballState.currentState) {
+                case 'WANDER':
+                    if (isNearRipple) {
+                        ballState.currentState = 'FLEE';
+                        ballState.fleeTimer = 3;
+                        ball.material.color.setHex(0xffff00);
+                        ball.material.emissive.setHex(0xffff00);
+                    } else {
+                        ballState.wanderPhase += deltaTime * ballState.speed;
+                        ballState.angle = ballState.wanderPhase;
+                    }
+                    break;
+                    
+                case 'FLEE':
+                    ballState.fleeTimer -= deltaTime;
+                    if (ballState.fleeTimer <= 0) {
+                        ballState.currentState = 'WANDER';
+                        ball.material.color.setHex(0xff0000);
+                        ball.material.emissive.setHex(0xff0000);
+                    } else {
+                        ballState.angle -= deltaTime * ballState.speed * 2;
+                    }
+                    break;
+            }
+            
+            const ballX = Math.cos(ballState.angle) * ballState.orbitRadius;
+            const ballZ = Math.sin(ballState.angle * 2) * ballState.orbitRadius * 0.7;
+            
+            const surfaceHeight = getCubeHeightAtPosition(ballX, ballZ);
+            ball.position.set(ballX, surfaceHeight + 1.5, ballZ);
+        }
+        
+        function handleRaycasting() {
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(cubes);
             
@@ -168,37 +310,58 @@
                     cube.material.emissiveIntensity = 0.5;
                 }
             }
+        }
+        
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
+        
+        function onClick(event) {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
             
-            for (let i = 0; i < cubes.length; i++) {
-                const cube = cubes[i];
-                const { baseX, baseZ, isHovered, targetScale } = cube.userData;
-                
-                const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
-                
-                const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
-                const secondWave = Math.cos(baseX * 0.3 + time * 1.5) * Math.sin(baseZ * 0.3 + time) * 1.5;
-                
-                let targetY = waveHeight + secondWave;
-                
-                if (isHovered) {
-                    targetY += 2;
-                }
-                
-                cube.position.y += (targetY - cube.position.y) * 0.1;
-                
-                const currentScale = cube.scale.x;
-                const newScale = currentScale + (targetScale - currentScale) * 0.15;
-                cube.scale.set(newScale, newScale, newScale);
-                
-                const hue = (Math.sin(time + distance * 0.1) * 0.5 + 0.5) * 0.1 + 0.55;
-                if (!isHovered) {
-                    cube.material.color.setHSL(hue, 0.8, 0.5);
-                    cube.material.emissive.setHSL(hue, 0.5, 0.1);
-                }
+            if (intersects.length > 0) {
+                const cube = intersects[0].object;
+                ripples.push({
+                    centerX: cube.userData.baseX,
+                    centerZ: cube.userData.baseZ,
+                    radius: 0,
+                    time: 0,
+                    maxTime: 2,
+                    strength: 3
+                });
             }
+        }
+        
+        window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('click', onClick, false);
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        window.addEventListener('resize', onWindowResize, false);
+        
+        let lastTime = 0;
+        
+        function animate() {
+            requestAnimationFrame(animate);
             
-            pointLight.position.x = Math.sin(time * 0.5) * 10;
-            pointLight.position.z = Math.cos(time * 0.5) * 10;
+            const currentTime = Date.now() * 0.001;
+            const deltaTime = currentTime - lastTime;
+            lastTime = currentTime;
+            
+            handleRaycasting();
+            calculateWaveMatrix(currentTime);
+            updateRipples(deltaTime);
+            updateBallStateMachine(currentTime, deltaTime);
+            updateUI();
+            
+            pointLight.position.x = Math.sin(currentTime * 0.5) * 10;
+            pointLight.position.z = Math.cos(currentTime * 0.5) * 10;
             
             renderer.render(scene, camera);
         }
@@ -207,3 +370,43 @@
     </script>
 </body>
 </html>
+
+<!--
+## 设计说明
+
+### 1. 小球状态机 (FSM) 设计
+我采用了基于枚举的简单有限状态机实现：
+
+- **状态定义**：两个状态 - 'WANDER'(巡逻) 和 'FLEE'(逃跑)
+- **巡逻状态 (WANDER)**：
+  - 小球按照 8 字形轨迹平滑运动（使用 Math.sin*2 实现）
+  - 持续检测周围 3 个单位内是否有冲击波扩散
+  - 一旦检测到冲击波，立即切换到逃跑状态
+  
+- **逃跑状态 (FLEE)**：
+  - 小球颜色变为黄色发光
+  - 运动速度翻倍（speed * 2）
+  - 向原有运动轨迹的反方向移动
+  - 启动 3 秒计时器，时间结束后自动恢复巡逻状态
+
+- **状态切换逻辑**：在每个 update 周期中，通过 ripple 扩散范围与小球位置的距离计算来触发状态转换
+
+### 2. 多重涟漪叠加算法
+我采用了波纹队列 + 空间距离衰减的叠加算法：
+
+- **涟漪数据结构**：每个涟漪对象包含
+  - centerX/centerZ: 冲击波中心点
+  - radius: 当前扩散半径（随时间增大）
+  - time: 已存在时间
+  - maxTime: 最大生命周期（2秒）
+  - strength: 冲击波强度
+
+- **叠加计算**：
+  对每个方块，遍历所有活跃的涟漪，计算：
+  1. 空间距离：方块到涟漪中心的距离
+  2. 波形因子：使用 cos 函数在涟漪波前（waveDist ±1.5）产生平滑的隆起效果
+  3. 时间衰减：(1 - ripple.time / ripple.maxTime) 涟漪随时间减弱
+  4. 将所有涟漪的影响线性叠加，得到方块最终的涟漪高度 totalRippleHeight
+
+- **生命周期管理**：每个动画帧更新涟漪的时间和扩散半径，过期（超过 maxTime）的涟漪自动从队列中移除，支持连续点击产生无限叠加的冲击波
+-->
