@@ -27,18 +27,62 @@
             transform: translateX(-50%);
             color: #fff;
             font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 16px;
+            font-size: 14px;
             text-align: center;
             pointer-events: none;
             text-shadow: 0 0 10px rgba(0, 150, 255, 0.8);
             z-index: 100;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 8px;
+            min-width: 400px;
         }
     </style>
 </head>
 <body>
-    <div id="info">3D 互动波浪矩阵 - 移动鼠标与立方体交互</div>
+    <div id="info">3D 互动波浪矩阵 - 移动鼠标与立方体交互，点击产生冲击波</div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
+        // ============================================
+        // 配置常量
+        // ============================================
+        const CONFIG = {
+            gridSize: 15,
+            cubeSize: 0.8,
+            spacing: 1.2,
+            axesHelperSize: 10,
+            ballRadius: 0.4,
+            ballOrbitRadius: 8,
+            ballSpeed: 0.5,
+            rippleSpeed: 8,
+            rippleDecay: 2,
+            rippleMaxDistance: 10,
+            fleeDistance: 3,
+            fleeDuration: 3,
+            fleeSpeedMultiplier: 2
+        };
+
+        // ============================================
+        // 全局状态
+        // ============================================
+        const state = {
+            time: 0,
+            hoveredCube: null,
+            ripples: [],
+            ball: {
+                mesh: null,
+                state: 'WANDER',
+                stateTimer: 0,
+                baseColor: 0xff0000,
+                fleeColor: 0xffff00,
+                phase: 0,
+                direction: 1
+            }
+        };
+
+        // ============================================
+        // 场景初始化
+        // ============================================
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0a0a1a);
         
@@ -57,7 +101,10 @@
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
-        
+
+        // ============================================
+        // 灯光设置
+        // ============================================
         const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
         scene.add(ambientLight);
         
@@ -77,112 +124,265 @@
         const pointLight = new THREE.PointLight(0x00aaff, 0.8, 50);
         pointLight.position.set(0, 15, 0);
         scene.add(pointLight);
-        
-        const gridSize = 15;
-        const cubeSize = 0.8;
-        const spacing = 1.2;
+
+        // ============================================
+        // 1. 坐标轴辅助工具
+        // ============================================
+        const axesHelper = new THREE.AxesHelper(CONFIG.axesHelperSize);
+        scene.add(axesHelper);
+
+        // ============================================
+        // 波浪矩阵生成
+        // ============================================
         const cubes = [];
         const originalPositions = [];
+        const geometry = new THREE.BoxGeometry(CONFIG.cubeSize, CONFIG.cubeSize, CONFIG.cubeSize);
         
-        const geometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
-        
-        for (let i = 0; i < gridSize; i++) {
-            for (let j = 0; j < gridSize; j++) {
-                const material = new THREE.MeshStandardMaterial({
-                    color: 0x0066ff,
-                    metalness: 0.3,
-                    roughness: 0.4,
-                    emissive: 0x001133,
-                    emissiveIntensity: 0.2
-                });
-                
-                const cube = new THREE.Mesh(geometry, material);
-                
-                const x = (i - (gridSize - 1) / 2) * spacing;
-                const z = (j - (gridSize - 1) / 2) * spacing;
-                
-                cube.position.set(x, 0, z);
-                cube.castShadow = true;
-                cube.receiveShadow = true;
-                
-                cube.userData = {
-                    gridX: i,
-                    gridZ: j,
-                    baseX: x,
-                    baseZ: z,
-                    originalScale: 1,
-                    targetScale: 1,
-                    isHovered: false
-                };
-                
-                cubes.push(cube);
-                originalPositions.push({ x, z });
-                scene.add(cube);
+        function initWaveMatrix() {
+            for (let i = 0; i < CONFIG.gridSize; i++) {
+                for (let j = 0; j < CONFIG.gridSize; j++) {
+                    const material = new THREE.MeshStandardMaterial({
+                        color: 0x0066ff,
+                        metalness: 0.3,
+                        roughness: 0.4,
+                        emissive: 0x001133,
+                        emissiveIntensity: 0.2
+                    });
+                    
+                    const cube = new THREE.Mesh(geometry, material);
+                    
+                    const x = (i - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                    const z = (j - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                    
+                    cube.position.set(x, 0, z);
+                    cube.castShadow = true;
+                    cube.receiveShadow = true;
+                    
+                    cube.userData = {
+                        gridX: i,
+                        gridZ: j,
+                        baseX: x,
+                        baseZ: z,
+                        originalScale: 1,
+                        targetScale: 1,
+                        isHovered: false,
+                        currentHeight: 0
+                    };
+                    
+                    cubes.push(cube);
+                    originalPositions.push({ x, z });
+                    scene.add(cube);
+                }
             }
         }
-        
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-        let hoveredCube = null;
-        
-        function onMouseMove(event) {
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        // ============================================
+        // 2. 红色小球创建
+        // ============================================
+        function initBall() {
+            const ballGeometry = new THREE.SphereGeometry(CONFIG.ballRadius, 32, 32);
+            const ballMaterial = new THREE.MeshStandardMaterial({
+                color: state.ball.baseColor,
+                emissive: 0xff0000,
+                emissiveIntensity: 0.5,
+                metalness: 0.5,
+                roughness: 0.3
+            });
+            
+            state.ball.mesh = new THREE.Mesh(ballGeometry, ballMaterial);
+            state.ball.mesh.castShadow = true;
+            scene.add(state.ball.mesh);
         }
-        
-        window.addEventListener('mousemove', onMouseMove, false);
-        
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-        
-        window.addEventListener('resize', onWindowResize, false);
-        
-        function animate() {
-            requestAnimationFrame(animate);
+
+        // ============================================
+        // 世界坐标到网格索引映射
+        // ============================================
+        function worldToGrid(worldX, worldZ) {
+            const halfGrid = (CONFIG.gridSize - 1) / 2;
+            const i = Math.round(worldX / CONFIG.spacing + halfGrid);
+            const j = Math.round(worldZ / CONFIG.spacing + halfGrid);
             
-            const time = Date.now() * 0.001;
-            
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects(cubes);
-            
-            if (hoveredCube && (!intersects.length || intersects[0].object !== hoveredCube)) {
-                hoveredCube.userData.isHovered = false;
-                hoveredCube.userData.targetScale = 1;
-                hoveredCube.material.color.setHex(0x0066ff);
-                hoveredCube.material.emissive.setHex(0x001133);
-                hoveredCube.material.emissiveIntensity = 0.2;
-                hoveredCube = null;
+            if (i >= 0 && i < CONFIG.gridSize && j >= 0 && j < CONFIG.gridSize) {
+                return { i, j, valid: true };
             }
+            return { i: -1, j: -1, valid: false };
+        }
+
+        function gridToWorld(i, j) {
+            const halfGrid = (CONFIG.gridSize - 1) / 2;
+            const x = (i - halfGrid) * CONFIG.spacing;
+            const z = (j - halfGrid) * CONFIG.spacing;
+            return { x, z };
+        }
+
+        // ============================================
+        // 获取指定世界坐标下的波浪高度
+        // ============================================
+        function getWaveHeightAt(x, z, time) {
+            const distance = Math.sqrt(x * x + z * z);
+            const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
+            const secondWave = Math.cos(x * 0.3 + time * 1.5) * Math.sin(z * 0.3 + time) * 1.5;
+            return waveHeight + secondWave;
+        }
+
+        // ============================================
+        // 获取方块在指定时间的完整高度（波浪+涟漪+悬停）
+        // ============================================
+        function getCubeTotalHeight(cube, time) {
+            const { baseX, baseZ } = cube.userData;
             
-            if (intersects.length > 0) {
-                const cube = intersects[0].object;
-                if (cube !== hoveredCube) {
-                    hoveredCube = cube;
-                    cube.userData.isHovered = true;
-                    cube.userData.targetScale = 1.5;
-                    cube.material.color.setHex(0xff3366);
-                    cube.material.emissive.setHex(0xff0000);
-                    cube.material.emissiveIntensity = 0.5;
+            let height = getWaveHeightAt(baseX, baseZ, time);
+            
+            for (const ripple of state.ripples) {
+                const cubeWorldX = baseX;
+                const cubeWorldZ = baseZ;
+                const rippleWorldX = (ripple.centerI - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                const rippleWorldZ = (ripple.centerJ - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                
+                const dist = Math.sqrt(
+                    Math.pow(cubeWorldX - rippleWorldX, 2) + 
+                    Math.pow(cubeWorldZ - rippleWorldZ, 2)
+                );
+                
+                const rippleAge = time - ripple.startTime;
+                const rippleRadius = rippleAge * CONFIG.rippleSpeed;
+                const rippleWidth = 2;
+                
+                if (dist < rippleRadius + rippleWidth && dist > rippleRadius - rippleWidth) {
+                    const distFromWave = Math.abs(dist - rippleRadius);
+                    const waveIntensity = Math.max(0, 1 - distFromWave / rippleWidth);
+                    const decay = Math.exp(-rippleAge * CONFIG.rippleDecay * 0.3);
+                    height += waveIntensity * decay * 3;
                 }
             }
             
+            if (cube.userData.isHovered) {
+                height += 2;
+            }
+            
+            return height;
+        }
+
+        // ============================================
+        // 3. 涟漪状态管理
+        // ============================================
+        function createRipple(i, j) {
+            state.ripples.push({
+                centerI: i,
+                centerJ: j,
+                startTime: state.time,
+                active: true
+            });
+        }
+
+        function updateRipples(dt) {
+            state.ripples = state.ripples.filter(ripple => {
+                const age = state.time - ripple.startTime;
+                return age < 5;
+            });
+        }
+
+        // ============================================
+        // 4. 小球状态机 (FSM)
+        // ============================================
+        const BallStates = {
+            WANDER: 'WANDER',
+            FLEE: 'FLEE'
+        };
+
+        function updateBallStateMachine(dt) {
+            const ball = state.ball;
+            
+            if (ball.state === BallStates.WANDER) {
+                for (const ripple of state.ripples) {
+                    const rippleAge = state.time - ripple.startTime;
+                    const rippleWorldX = (ripple.centerI - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                    const rippleWorldZ = (ripple.centerJ - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                    
+                    const ballPos = ball.mesh.position;
+                    const distToRippleCenter = Math.sqrt(
+                        Math.pow(ballPos.x - rippleWorldX, 2) + 
+                        Math.pow(ballPos.z - rippleWorldZ, 2)
+                    );
+                    
+                    const rippleRadius = rippleAge * CONFIG.rippleSpeed;
+                    
+                    if (Math.abs(distToRippleCenter - rippleRadius) < CONFIG.fleeDistance && rippleAge < 2) {
+                        transitionToFlee();
+                        break;
+                    }
+                }
+            }
+            
+            if (ball.state === BallStates.FLEE) {
+                ball.stateTimer -= dt;
+                if (ball.stateTimer <= 0) {
+                    transitionToWander();
+                }
+            }
+        }
+
+        function transitionToFlee() {
+            state.ball.state = BallStates.FLEE;
+            state.ball.stateTimer = CONFIG.fleeDuration;
+            state.ball.mesh.material.color.setHex(state.ball.fleeColor);
+            state.ball.mesh.material.emissive.setHex(0xffff00);
+            state.ball.direction = -1;
+        }
+
+        function transitionToWander() {
+            state.ball.state = BallStates.WANDER;
+            state.ball.mesh.material.color.setHex(state.ball.baseColor);
+            state.ball.mesh.material.emissive.setHex(0xff0000);
+            state.ball.direction = 1;
+        }
+
+        // ============================================
+        // 小球运动更新 - 使用 Delta Time 积分法
+        // ============================================
+        function updateBallMovement(dt) {
+            const ball = state.ball;
+            const speed = ball.state === BallStates.FLEE ? 
+                CONFIG.ballSpeed * CONFIG.fleeSpeedMultiplier : 
+                CONFIG.ballSpeed;
+            
+            // Delta Time 积分法：phase 通过累加计算，而非绝对时间
+            // 这样可以保证状态切换时位置连续性
+            ball.phase += speed * dt * ball.direction;
+            
+            // 使用当前 phase 计算 8 字形轨迹位置
+            const t = ball.phase;
+            const x = CONFIG.ballOrbitRadius * Math.sin(t);
+            const z = CONFIG.ballOrbitRadius * Math.sin(t) * Math.cos(t);
+            
+            // 计算 Y 轴高度
+            const gridPos = worldToGrid(x, z);
+            let y = 2;
+            
+            if (gridPos.valid) {
+                const cubeIndex = gridPos.i * CONFIG.gridSize + gridPos.j;
+                const cube = cubes[cubeIndex];
+                if (cube) {
+                    const cubeHeight = getCubeTotalHeight(cube, state.time);
+                    y = cubeHeight + CONFIG.ballRadius + 0.5;
+                }
+            } else {
+                y = getWaveHeightAt(x, z, state.time) + CONFIG.ballRadius + 0.5;
+            }
+            
+            ball.mesh.position.set(x, y, z);
+        }
+
+        // ============================================
+        // 波浪矩阵更新
+        // ============================================
+        function updateWaveMatrix(dt) {
             for (let i = 0; i < cubes.length; i++) {
                 const cube = cubes[i];
-                const { baseX, baseZ, isHovered, targetScale } = cube.userData;
+                const { isHovered, targetScale } = cube.userData;
                 
-                const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
-                
-                const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
-                const secondWave = Math.cos(baseX * 0.3 + time * 1.5) * Math.sin(baseZ * 0.3 + time) * 1.5;
-                
-                let targetY = waveHeight + secondWave;
-                
-                if (isHovered) {
-                    targetY += 2;
-                }
+                const targetY = getCubeTotalHeight(cube, state.time);
+                cube.userData.currentHeight = targetY;
                 
                 cube.position.y += (targetY - cube.position.y) * 0.1;
                 
@@ -190,20 +390,130 @@
                 const newScale = currentScale + (targetScale - currentScale) * 0.15;
                 cube.scale.set(newScale, newScale, newScale);
                 
-                const hue = (Math.sin(time + distance * 0.1) * 0.5 + 0.5) * 0.1 + 0.55;
+                const distance = Math.sqrt(cube.userData.baseX ** 2 + cube.userData.baseZ ** 2);
+                const hue = (Math.sin(state.time + distance * 0.1) * 0.5 + 0.5) * 0.1 + 0.55;
                 if (!isHovered) {
                     cube.material.color.setHSL(hue, 0.8, 0.5);
                     cube.material.emissive.setHSL(hue, 0.5, 0.1);
                 }
             }
+        }
+
+        // ============================================
+        // UI 更新
+        // ============================================
+        function updateUI() {
+            const infoDiv = document.getElementById('info');
             
-            pointLight.position.x = Math.sin(time * 0.5) * 10;
-            pointLight.position.z = Math.cos(time * 0.5) * 10;
+            if (state.hoveredCube) {
+                const cube = state.hoveredCube;
+                const { gridX, gridZ, baseX, baseZ } = cube.userData;
+                const worldX = cube.position.x.toFixed(2);
+                const worldY = cube.position.y.toFixed(2);
+                const worldZ = cube.position.z.toFixed(2);
+                
+                infoDiv.innerHTML = `
+                    <div>当前悬停 - 网格坐标: [${gridX}, ${gridZ}]</div>
+                    <div>世界坐标: (${worldX}, ${worldY}, ${worldZ})</div>
+                    <div>实时高度: ${worldY}</div>
+                `;
+            } else {
+                infoDiv.innerHTML = '3D 互动波浪矩阵 - 移动鼠标与立方体交互，点击产生冲击波';
+            }
+        }
+
+        // ============================================
+        // 交互事件处理
+        // ============================================
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
+
+        function onClick(event) {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (intersects.length > 0) {
+                const cube = intersects[0].object;
+                const { gridX, gridZ } = cube.userData;
+                createRipple(gridX, gridZ);
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('click', onClick, false);
+        window.addEventListener('resize', onWindowResize, false);
+
+        // ============================================
+        // 鼠标悬停检测
+        // ============================================
+        function updateMouseHover() {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (state.hoveredCube && (!intersects.length || intersects[0].object !== state.hoveredCube)) {
+                state.hoveredCube.userData.isHovered = false;
+                state.hoveredCube.userData.targetScale = 1;
+                state.hoveredCube.material.color.setHex(0x0066ff);
+                state.hoveredCube.material.emissive.setHex(0x001133);
+                state.hoveredCube.material.emissiveIntensity = 0.2;
+                state.hoveredCube = null;
+            }
+            
+            if (intersects.length > 0) {
+                const cube = intersects[0].object;
+                if (cube !== state.hoveredCube) {
+                    state.hoveredCube = cube;
+                    cube.userData.isHovered = true;
+                    cube.userData.targetScale = 1.5;
+                    cube.material.color.setHex(0xff3366);
+                    cube.material.emissive.setHex(0xff0000);
+                    cube.material.emissiveIntensity = 0.5;
+                }
+            }
+        }
+
+        // ============================================
+        // 主渲染循环
+        // ============================================
+        let lastTime = 0;
+
+        function animate(currentTime) {
+            requestAnimationFrame(animate);
+            
+            const dt = (currentTime - lastTime) / 1000;
+            lastTime = currentTime;
+            state.time = currentTime / 1000;
+            
+            updateMouseHover();
+            updateRipples(dt);
+            updateWaveMatrix(dt);
+            updateBallStateMachine(dt);
+            updateBallMovement(dt);
+            updateUI();
+            
+            pointLight.position.x = Math.sin(state.time * 0.5) * 10;
+            pointLight.position.z = Math.cos(state.time * 0.5) * 10;
             
             renderer.render(scene, camera);
         }
-        
-        animate();
+
+        // ============================================
+        // 初始化
+        // ============================================
+        initWaveMatrix();
+        initBall();
+        animate(0);
     </script>
 </body>
 </html>
