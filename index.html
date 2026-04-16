@@ -32,13 +32,68 @@
             pointer-events: none;
             text-shadow: 0 0 10px rgba(0, 150, 255, 0.8);
             z-index: 100;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px 25px;
+            border-radius: 10px;
+            border: 1px solid rgba(0, 150, 255, 0.3);
+            min-width: 400px;
+        }
+        
+        #info .title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #00aaff;
+        }
+        
+        #info .data {
+            font-size: 14px;
+            color: #aaddff;
+        }
+        
+        #ball-state {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: #fff;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 14px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 100, 100, 0.5);
         }
     </style>
 </head>
 <body>
-    <div id="info">3D 互动波浪矩阵 - 移动鼠标与立方体交互</div>
+    <div id="info">
+        <div class="title">3D 互动波浪矩阵</div>
+        <div class="data" id="hover-data">移动鼠标与立方体交互</div>
+    </div>
+    <div id="ball-state">小球状态: 巡逻中</div>
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
+        const CONFIG = {
+            gridSize: 15,
+            cubeSize: 0.8,
+            spacing: 1.2,
+            waveSpeed: 2,
+            waveAmplitude: 2,
+            rippleSpeed: 8,
+            rippleMaxRadius: 12,
+            rippleDuration: 3,
+            rippleStrength: 3,
+            ballRadius: 0.4,
+            ballOrbitRadius: 5,
+            ballBaseSpeed: 0.8,
+            fleeSpeedMultiplier: 2,
+            fleeDuration: 3000,
+            fleeTriggerDistance: 3,
+            returnSmoothFactor: 0.03,
+            returnThreshold: 0.3
+        };
+
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0a0a1a);
         
@@ -57,6 +112,9 @@
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
+
+        const axesHelper = new THREE.AxesHelper(10);
+        scene.add(axesHelper);
         
         const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
         scene.add(ambientLight);
@@ -77,17 +135,12 @@
         const pointLight = new THREE.PointLight(0x00aaff, 0.8, 50);
         pointLight.position.set(0, 15, 0);
         scene.add(pointLight);
-        
-        const gridSize = 15;
-        const cubeSize = 0.8;
-        const spacing = 1.2;
+
         const cubes = [];
-        const originalPositions = [];
+        const geometry = new THREE.BoxGeometry(CONFIG.cubeSize, CONFIG.cubeSize, CONFIG.cubeSize);
         
-        const geometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
-        
-        for (let i = 0; i < gridSize; i++) {
-            for (let j = 0; j < gridSize; j++) {
+        for (let i = 0; i < CONFIG.gridSize; i++) {
+            for (let j = 0; j < CONFIG.gridSize; j++) {
                 const material = new THREE.MeshStandardMaterial({
                     color: 0x0066ff,
                     metalness: 0.3,
@@ -98,8 +151,8 @@
                 
                 const cube = new THREE.Mesh(geometry, material);
                 
-                const x = (i - (gridSize - 1) / 2) * spacing;
-                const z = (j - (gridSize - 1) / 2) * spacing;
+                const x = (i - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
+                const z = (j - (CONFIG.gridSize - 1) / 2) * CONFIG.spacing;
                 
                 cube.position.set(x, 0, z);
                 cube.castShadow = true;
@@ -110,79 +163,450 @@
                     gridZ: j,
                     baseX: x,
                     baseZ: z,
-                    originalScale: 1,
                     targetScale: 1,
                     isHovered: false
                 };
                 
                 cubes.push(cube);
-                originalPositions.push({ x, z });
                 scene.add(cube);
             }
         }
-        
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-        let hoveredCube = null;
-        
-        function onMouseMove(event) {
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-        }
-        
-        window.addEventListener('mousemove', onMouseMove, false);
-        
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-        
-        window.addEventListener('resize', onWindowResize, false);
-        
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            const time = Date.now() * 0.001;
-            
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects(cubes);
-            
-            if (hoveredCube && (!intersects.length || intersects[0].object !== hoveredCube)) {
-                hoveredCube.userData.isHovered = false;
-                hoveredCube.userData.targetScale = 1;
-                hoveredCube.material.color.setHex(0x0066ff);
-                hoveredCube.material.emissive.setHex(0x001133);
-                hoveredCube.material.emissiveIntensity = 0.2;
-                hoveredCube = null;
-            }
-            
-            if (intersects.length > 0) {
-                const cube = intersects[0].object;
-                if (cube !== hoveredCube) {
-                    hoveredCube = cube;
-                    cube.userData.isHovered = true;
-                    cube.userData.targetScale = 1.5;
-                    cube.material.color.setHex(0xff3366);
-                    cube.material.emissive.setHex(0xff0000);
-                    cube.material.emissiveIntensity = 0.5;
-                }
-            }
-            
-            for (let i = 0; i < cubes.length; i++) {
-                const cube = cubes[i];
-                const { baseX, baseZ, isHovered, targetScale } = cube.userData;
-                
+
+        const ballGeometry = new THREE.SphereGeometry(CONFIG.ballRadius, 32, 32);
+        const ballMaterial = new THREE.MeshStandardMaterial({
+            color: 0xff0000,
+            emissive: 0xff0000,
+            emissiveIntensity: 0.8,
+            metalness: 0.5,
+            roughness: 0.2
+        });
+        const ball = new THREE.Mesh(ballGeometry, ballMaterial);
+        ball.castShadow = true;
+        scene.add(ball);
+
+        const ballGlow = new THREE.PointLight(0xff0000, 1, 5);
+        ball.add(ballGlow);
+
+        const WaveMatrix = {
+            calculate(time, cube, rippleOffset) {
+                const { baseX, baseZ, isHovered } = cube.userData;
                 const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
                 
-                const waveHeight = Math.sin(distance * 0.5 - time * 2) * 2;
+                const waveHeight = Math.sin(distance * 0.5 - time * CONFIG.waveSpeed) * CONFIG.waveAmplitude;
                 const secondWave = Math.cos(baseX * 0.3 + time * 1.5) * Math.sin(baseZ * 0.3 + time) * 1.5;
                 
-                let targetY = waveHeight + secondWave;
+                let targetY = waveHeight + secondWave + rippleOffset;
                 
                 if (isHovered) {
                     targetY += 2;
                 }
+                
+                return targetY;
+            },
+            
+            updateColors(time, cube) {
+                const { baseX, baseZ, isHovered } = cube.userData;
+                if (isHovered) return;
+                
+                const distance = Math.sqrt(baseX * baseX + baseZ * baseZ);
+                const hue = (Math.sin(time + distance * 0.1) * 0.5 + 0.5) * 0.1 + 0.55;
+                cube.material.color.setHSL(hue, 0.8, 0.5);
+                cube.material.emissive.setHSL(hue, 0.5, 0.1);
+            }
+        };
+
+        const RippleManager = {
+            ripples: [],
+            
+            create(centerX, centerZ, centerI, centerJ) {
+                this.ripples.push({
+                    centerX,
+                    centerZ,
+                    centerI,
+                    centerJ,
+                    startTime: Date.now(),
+                    maxRadius: CONFIG.rippleMaxRadius,
+                    strength: CONFIG.rippleStrength
+                });
+            },
+            
+            calculateOffset(baseX, baseZ, currentTime) {
+                let totalOffset = 0;
+                
+                for (let i = this.ripples.length - 1; i >= 0; i--) {
+                    const ripple = this.ripples[i];
+                    const elapsed = (currentTime - ripple.startTime) / 1000;
+                    
+                    if (elapsed > CONFIG.rippleDuration) {
+                        this.ripples.splice(i, 1);
+                        continue;
+                    }
+                    
+                    const currentRadius = elapsed * CONFIG.rippleSpeed;
+                    const distance = Math.sqrt(
+                        Math.pow(baseX - ripple.centerX, 2) + 
+                        Math.pow(baseZ - ripple.centerZ, 2)
+                    );
+                    
+                    const distanceFromWavefront = Math.abs(distance - currentRadius);
+                    
+                    if (distanceFromWavefront < 2) {
+                        const waveIntensity = Math.exp(-distanceFromWavefront * 2);
+                        const timeDecay = 1 - (elapsed / CONFIG.rippleDuration);
+                        const distanceDecay = Math.exp(-distance * 0.1);
+                        
+                        const phase = Math.sin((distance - currentRadius) * Math.PI);
+                        
+                        totalOffset += ripple.strength * waveIntensity * timeDecay * distanceDecay * phase;
+                    }
+                }
+                
+                return totalOffset;
+            },
+            
+            getActiveRipples() {
+                return this.ripples;
+            }
+        };
+
+        const BallFSM = {
+            states: {
+                WANDER: 'wander',
+                FLEE: 'flee',
+                RETURN: 'return'
+            },
+            
+            currentState: 'wander',
+            stateStartTime: 0,
+            angle: 0,
+            speed: CONFIG.ballBaseSpeed,
+            orbitRadius: CONFIG.ballOrbitRadius,
+            fleeDirection: { x: 1, z: 0 },
+            
+            update(time, deltaTime, ballPosition, ripples) {
+                this.checkTransitions(ballPosition, ripples);
+                
+                switch (this.currentState) {
+                    case this.states.WANDER:
+                        this.updateWander(time, deltaTime, ballPosition);
+                        break;
+                    case this.states.FLEE:
+                        this.updateFlee(time, deltaTime, ballPosition);
+                        break;
+                    case this.states.RETURN:
+                        this.updateReturn(time, deltaTime, ballPosition);
+                        break;
+                }
+                
+                return {
+                    state: this.currentState,
+                    speed: this.speed
+                };
+            },
+            
+            checkTransitions(ballPosition, ripples) {
+                if (this.currentState === this.states.WANDER) {
+                    for (const ripple of ripples) {
+                        const elapsed = (Date.now() - ripple.startTime) / 1000;
+                        const currentRadius = elapsed * CONFIG.rippleSpeed;
+                        
+                        const distance = Math.sqrt(
+                            Math.pow(ballPosition.x - ripple.centerX, 2) +
+                            Math.pow(ballPosition.z - ripple.centerZ, 2)
+                        );
+                        
+                        const distanceToWavefront = Math.abs(distance - currentRadius);
+                        
+                        if (distanceToWavefront < CONFIG.fleeTriggerDistance && elapsed < CONFIG.rippleDuration) {
+                            this.transitionToFlee(ballPosition, ripple);
+                            break;
+                        }
+                    }
+                } else if (this.currentState === this.states.FLEE) {
+                    const elapsed = Date.now() - this.stateStartTime;
+                    if (elapsed > CONFIG.fleeDuration) {
+                        this.transitionToReturn();
+                    }
+                }
+            },
+            
+            transitionToFlee(ballPosition, ripple) {
+                this.currentState = this.states.FLEE;
+                this.stateStartTime = Date.now();
+                this.speed = CONFIG.ballBaseSpeed * CONFIG.fleeSpeedMultiplier;
+                
+                const dx = ballPosition.x - ripple.centerX;
+                const dz = ballPosition.z - ripple.centerZ;
+                const length = Math.sqrt(dx * dx + dz * dz);
+                
+                if (length > 0.001) {
+                    this.fleeDirection = { x: dx / length, z: dz / length };
+                }
+                
+                ball.material.color.setHex(0xffff00);
+                ball.material.emissive.setHex(0xffff00);
+                ballGlow.color.setHex(0xffff00);
+                
+                document.getElementById('ball-state').textContent = '小球状态: 逃跑中!';
+                document.getElementById('ball-state').style.borderColor = 'rgba(255, 255, 0, 0.8)';
+            },
+            
+            transitionToReturn() {
+                this.currentState = this.states.RETURN;
+                this.speed = CONFIG.ballBaseSpeed;
+                
+                ball.material.color.setHex(0x00ff88);
+                ball.material.emissive.setHex(0x00ff88);
+                ballGlow.color.setHex(0x00ff88);
+                
+                document.getElementById('ball-state').textContent = '小球状态: 返回轨道中...';
+                document.getElementById('ball-state').style.borderColor = 'rgba(0, 255, 136, 0.8)';
+            },
+            
+            transitionToWander() {
+                this.currentState = this.states.WANDER;
+                this.speed = CONFIG.ballBaseSpeed;
+                
+                ball.material.color.setHex(0xff0000);
+                ball.material.emissive.setHex(0xff0000);
+                ballGlow.color.setHex(0xff0000);
+                
+                document.getElementById('ball-state').textContent = '小球状态: 巡逻中';
+                document.getElementById('ball-state').style.borderColor = 'rgba(255, 100, 100, 0.5)';
+            },
+            
+            getOrbitPosition(angle) {
+                return {
+                    x: Math.sin(angle) * this.orbitRadius,
+                    z: Math.sin(angle * 2) * this.orbitRadius * 0.5
+                };
+            },
+            
+            findNearestOrbitAngle(ballPosition) {
+                const testAngles = 360;
+                let nearestAngle = this.angle;
+                let minDistance = Infinity;
+                
+                for (let i = 0; i < testAngles; i++) {
+                    const testAngle = this.angle + (i / testAngles) * Math.PI * 2;
+                    const orbitPos = this.getOrbitPosition(testAngle);
+                    const dist = Math.sqrt(
+                        Math.pow(orbitPos.x - ballPosition.x, 2) +
+                        Math.pow(orbitPos.z - ballPosition.z, 2)
+                    );
+                    
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        nearestAngle = testAngle;
+                    }
+                }
+                
+                return nearestAngle;
+            },
+            
+            updateWander(time, deltaTime, ballPosition) {
+                this.angle += this.speed * 0.02;
+                
+                const targetPos = this.getOrbitPosition(this.angle);
+                
+                ballPosition.x = targetPos.x;
+                ballPosition.z = targetPos.z;
+            },
+            
+            updateFlee(time, deltaTime, ballPosition) {
+                const moveSpeed = this.speed * deltaTime * 0.05;
+                
+                ballPosition.x += this.fleeDirection.x * moveSpeed;
+                ballPosition.z += this.fleeDirection.z * moveSpeed;
+                
+                const maxDist = CONFIG.gridSize * CONFIG.spacing / 2 - 1;
+                ballPosition.x = Math.max(-maxDist, Math.min(maxDist, ballPosition.x));
+                ballPosition.z = Math.max(-maxDist, Math.min(maxDist, ballPosition.z));
+                
+                this.fleeDirection.x += (Math.random() - 0.5) * 0.1;
+                this.fleeDirection.z += (Math.random() - 0.5) * 0.1;
+                const length = Math.sqrt(this.fleeDirection.x ** 2 + this.fleeDirection.z ** 2);
+                if (length > 0.001) {
+                    this.fleeDirection.x /= length;
+                    this.fleeDirection.z /= length;
+                }
+                
+                this.angle += this.speed * 0.02 * 0.5;
+            },
+            
+            updateReturn(time, deltaTime, ballPosition) {
+                this.angle += this.speed * 0.02;
+                
+                const nearestAngle = this.findNearestOrbitAngle(ballPosition);
+                const targetPos = this.getOrbitPosition(nearestAngle);
+                
+                const dx = targetPos.x - ballPosition.x;
+                const dz = targetPos.z - ballPosition.z;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                
+                if (distance < CONFIG.returnThreshold) {
+                    this.angle = nearestAngle;
+                    this.transitionToWander();
+                    return;
+                }
+                
+                const moveSpeed = this.speed * deltaTime * 0.08;
+                const direction = {
+                    x: distance > 0.001 ? dx / distance : 0,
+                    z: distance > 0.001 ? dz / distance : 0
+                };
+                
+                ballPosition.x += direction.x * moveSpeed + dx * CONFIG.returnSmoothFactor;
+                ballPosition.z += direction.z * moveSpeed + dz * CONFIG.returnSmoothFactor;
+            }
+        };
+
+        const BallController = {
+            position: { x: 0, y: 0, z: 0 },
+            
+            worldToGridIndex(worldX, worldZ) {
+                const i = Math.round((worldX / CONFIG.spacing) + (CONFIG.gridSize - 1) / 2);
+                const j = Math.round((worldZ / CONFIG.spacing) + (CONFIG.gridSize - 1) / 2);
+                return { i, j };
+            },
+            
+            getGridIndexValid(i, j) {
+                return i >= 0 && i < CONFIG.gridSize && j >= 0 && j < CONFIG.gridSize;
+            },
+            
+            getCubeHeightAt(worldX, worldZ, time) {
+                const { i, j } = this.worldToGridIndex(worldX, worldZ);
+                
+                if (this.getGridIndexValid(i, j)) {
+                    const cubeIndex = i * CONFIG.gridSize + j;
+                    const cube = cubes[cubeIndex];
+                    if (cube) {
+                        return cube.position.y;
+                    }
+                }
+                
+                const distance = Math.sqrt(worldX * worldX + worldZ * worldZ);
+                return Math.sin(distance * 0.5 - time * CONFIG.waveSpeed) * CONFIG.waveAmplitude;
+            },
+            
+            update(time, deltaTime) {
+                const stateInfo = BallFSM.update(time, deltaTime, this.position, RippleManager.getActiveRipples());
+                
+                const targetY = this.getCubeHeightAt(this.position.x, this.position.z, time);
+                this.position.y = targetY + CONFIG.ballRadius + 0.3;
+                
+                ball.position.set(this.position.x, this.position.y, this.position.z);
+                
+                return stateInfo;
+            }
+        };
+
+        const UIManager = {
+            infoElement: document.getElementById('info'),
+            hoverDataElement: document.getElementById('hover-data'),
+            
+            updateHoverInfo(hoveredCube) {
+                if (hoveredCube) {
+                    const { gridX, gridZ } = hoveredCube.userData;
+                    const pos = hoveredCube.position;
+                    
+                    this.hoverDataElement.innerHTML = 
+                        `当前悬停 - 网格坐标: [${gridX}, ${gridZ}] | ` +
+                        `世界坐标: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) | ` +
+                        `实时高度: ${pos.y.toFixed(2)}`;
+                } else {
+                    this.hoverDataElement.textContent = '移动鼠标与立方体交互';
+                }
+            }
+        };
+
+        const InteractionManager = {
+            raycaster: new THREE.Raycaster(),
+            mouse: new THREE.Vector2(),
+            hoveredCube: null,
+            lastClickTime: 0,
+            
+            init() {
+                window.addEventListener('mousemove', this.onMouseMove.bind(this), false);
+                window.addEventListener('click', this.onClick.bind(this), false);
+                window.addEventListener('resize', this.onWindowResize.bind(this), false);
+            },
+            
+            onMouseMove(event) {
+                this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            },
+            
+            onClick(event) {
+                const now = Date.now();
+                if (now - this.lastClickTime < 100) return;
+                this.lastClickTime = now;
+                
+                this.raycaster.setFromCamera(this.mouse, camera);
+                const intersects = this.raycaster.intersectObjects(cubes);
+                
+                if (intersects.length > 0) {
+                    const cube = intersects[0].object;
+                    const { gridX, gridZ, baseX, baseZ } = cube.userData;
+                    
+                    RippleManager.create(baseX, baseZ, gridX, gridZ);
+                    
+                    cube.material.emissiveIntensity = 1;
+                    setTimeout(() => {
+                        if (!cube.userData.isHovered) {
+                            cube.material.emissiveIntensity = 0.2;
+                        }
+                    }, 200);
+                }
+            },
+            
+            onWindowResize() {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            },
+            
+            update() {
+                this.raycaster.setFromCamera(this.mouse, camera);
+                const intersects = this.raycaster.intersectObjects(cubes);
+                
+                if (this.hoveredCube && (!intersects.length || intersects[0].object !== this.hoveredCube)) {
+                    this.hoveredCube.userData.isHovered = false;
+                    this.hoveredCube.userData.targetScale = 1;
+                    this.hoveredCube.material.color.setHex(0x0066ff);
+                    this.hoveredCube.material.emissive.setHex(0x001133);
+                    this.hoveredCube.material.emissiveIntensity = 0.2;
+                    this.hoveredCube = null;
+                }
+                
+                if (intersects.length > 0) {
+                    const cube = intersects[0].object;
+                    if (cube !== this.hoveredCube) {
+                        this.hoveredCube = cube;
+                        cube.userData.isHovered = true;
+                        cube.userData.targetScale = 1.5;
+                        cube.material.color.setHex(0xff3366);
+                        cube.material.emissive.setHex(0xff0000);
+                        cube.material.emissiveIntensity = 0.5;
+                    }
+                }
+                
+                UIManager.updateHoverInfo(this.hoveredCube);
+                
+                return this.hoveredCube;
+            }
+        };
+
+        function updateCubes(time) {
+            const currentTime = Date.now();
+            
+            for (let i = 0; i < cubes.length; i++) {
+                const cube = cubes[i];
+                const { baseX, baseZ, targetScale } = cube.userData;
+                
+                const rippleOffset = RippleManager.calculateOffset(baseX, baseZ, currentTime);
+                
+                const targetY = WaveMatrix.calculate(time, cube, rippleOffset);
                 
                 cube.position.y += (targetY - cube.position.y) * 0.1;
                 
@@ -190,19 +614,34 @@
                 const newScale = currentScale + (targetScale - currentScale) * 0.15;
                 cube.scale.set(newScale, newScale, newScale);
                 
-                const hue = (Math.sin(time + distance * 0.1) * 0.5 + 0.5) * 0.1 + 0.55;
-                if (!isHovered) {
-                    cube.material.color.setHSL(hue, 0.8, 0.5);
-                    cube.material.emissive.setHSL(hue, 0.5, 0.1);
-                }
+                WaveMatrix.updateColors(time, cube);
             }
+        }
+
+        let lastTime = Date.now();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const currentTime = Date.now();
+            const deltaTime = currentTime - lastTime;
+            lastTime = currentTime;
+            
+            const time = currentTime * 0.001;
+            
+            InteractionManager.update();
+            
+            updateCubes(time);
+            
+            BallController.update(time, deltaTime);
             
             pointLight.position.x = Math.sin(time * 0.5) * 10;
             pointLight.position.z = Math.cos(time * 0.5) * 10;
             
             renderer.render(scene, camera);
         }
-        
+
+        InteractionManager.init();
         animate();
     </script>
 </body>
